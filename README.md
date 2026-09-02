@@ -1,35 +1,158 @@
 # FeatureGuard
 
-TODO: Delete this and the text below, and describe your gem
-
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/feature_guard`. To experiment with that code, run `bin/console` for an interactive prompt.
+FeatureGuard protects Rails controller actions with feature flags stored on an
+account's settings record. It also exposes the same checks to views.
 
 ## Installation
 
-TODO: Replace `UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG` with your gem name right after releasing it to RubyGems.org. Please do not do it earlier due to security reasons. Alternatively, replace this section with instructions to install your gem from git if you don't plan to release to RubyGems.org.
+Add the gem to the Rails application's `Gemfile`:
 
-Install the gem and add to the application's Gemfile by executing:
-
-```bash
-bundle add UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+```ruby
+gem "feature_guard"
 ```
 
-If bundler is not being used to manage dependencies, install the gem by executing:
+Then install dependencies:
 
 ```bash
-gem install UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+bundle install
 ```
 
-## Usage
+## Configuration
 
-TODO: Write usage instructions here
+Create `config/initializers/feature_guard.rb`:
 
-## Development
+```ruby
+FeatureGuard.configure do |config|
+  config.redirect_method = :dashboards_path
+end
+```
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+The default values are:
 
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
+```ruby
+redirect_method: :root_path
+```
 
-## Contributing
+`redirect_method` is combined with the controller's first namespace. For
+example, `:dashboards_path` in a `Partner` controller becomes
+`partner_dashboards_path`.
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/feature_guard.
+## Settings record
+
+The account's settings record must have a boolean attribute for each feature:
+
+```ruby
+# current_account.feature_setting
+inventory_enabled # true or false
+reports_enabled   # true or false
+```
+
+For example, an account can expose its settings record like this:
+
+```ruby
+class Account < ApplicationRecord
+  has_one :feature_setting
+end
+```
+
+## Protect a controller action
+
+Declare a feature in a controller:
+
+```ruby
+class InventoryController < ApplicationController
+  feature :inventory
+
+  def index
+  end
+end
+```
+
+`feature :inventory` expects `inventory_enabled` on
+`current_account.feature_setting`. FeatureGuard adds a `before_action`:
+
+```text
+inventory_enabled is true  -> the action runs
+inventory_enabled is false -> the request redirects
+```
+
+Limit a feature check to specific actions with normal `before_action` options:
+
+```ruby
+class InventoryController < ApplicationController
+  feature :inventory, only: :index
+end
+```
+
+Use a custom settings column when needed:
+
+```ruby
+feature :inventory, column: :inventory_access_enabled
+```
+
+## Feature policy
+
+Create a policy in the Rails application and have the host controller provide
+one instance per request. Include `FeatureGuard::Policy`; the module provides
+the common feature-resolution behavior.
+
+```ruby
+# app/policies/feature_policy.rb
+class FeaturePolicy
+  include FeatureGuard::Policy
+end
+```
+
+```ruby
+# app/controllers/application_controller.rb
+def feature_guard_policy
+  @feature_guard_policy ||= FeaturePolicy.new(
+    feature_setting: current_account&.feature_setting,
+    impersonating: in_impersonation?
+  )
+end
+```
+
+The policy receives the account's `feature_setting` and an optional
+`impersonating` value. When impersonating, every feature is enabled.
+
+For any declaration, FeatureGuard maps the feature column to a policy method:
+
+```text
+feature :name                         -> name_enabled?
+feature :name, column: :custom_access -> custom_access?
+```
+
+A policy method returning `true` enables that feature. Returning `false` or
+`nil` falls back to the corresponding persisted setting. When the policy does
+not define the matching method, the included module's `method_missing` reads
+the persisted setting. Its `respond_to_missing?` implementation advertises
+these dynamic feature methods to Ruby.
+
+Add `feature_guard_policy` to the base controller so all controllers can use
+it. For namespaced controllers, add it to that namespace's base controller. If it is missing, the gem raises
+`FeatureGuard::MissingPolicyError`.
+
+## Use a feature in a view
+
+`module_enabled?` is available in controller actions and views:
+
+```erb
+<% if module_enabled?(:inventory) %>
+  <%= link_to "Inventory", inventory_path %>
+<% end %>
+```
+
+You may use `module_enabled?` without declaring `feature :inventory` in the
+controller. Declaring `feature` is only required when you want FeatureGuard to
+add the automatic redirect callback.
+
+## Errors and missing settings
+
+- If the account has no settings record, `module_enabled?` returns `false`.
+- If the settings record lacks the expected feature column, FeatureGuard raises
+  `FeatureGuard::MissingFeatureColumnError`.
+- If the base controller does not implement `feature_guard_policy`, FeatureGuard
+  raises `FeatureGuard::MissingPolicyError`.
+- If the namespaced dashboard route does not exist, FeatureGuard raises
+  `FeatureGuard::MissingRouteError`.
