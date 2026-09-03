@@ -2,49 +2,38 @@
 
 module FeatureGuard
   module Policy
-    # `feature_setting` must respond to feature predicate methods such as
-    # `inventory_enabled?`. Set `impersonating` when the request should bypass
-    # all persisted feature checks.
-    def initialize(current_user:, feature_setting:, impersonating: false)
+    # `feature_setting` is used for declared feature methods that the policy
+    # does not override directly.
+    def initialize(current_user:, feature_setting:)
       @current_user = current_user
       @feature_setting = feature_setting
-      @impersonating = impersonating
     end
 
-    # Calls the policy method derived from a feature column. A policy method
-    # returning true enables access; false or nil uses the persisted setting.
-    def feature_enabled?(method_name)
-      return true if @impersonating
-
-      public_send(method_name) || persisted_feature_enabled?(method_name)
-    end
-
+    # A missing policy predicate falls back to the identically named persisted
+    # setting predicate. Defined policy methods fully override that setting.
     def method_missing(method_name, ...)
-      return super unless feature_method?(method_name)
+      return super unless method_name.to_s.end_with?('?')
 
       persisted_feature_enabled?(method_name)
     end
 
     def respond_to_missing?(method_name, include_private = false)
-      feature_method?(method_name) || super
+      return super unless method_name.to_s.end_with?('?')
+
+      @feature_setting.respond_to?(method_name, include_private) || super
     end
 
     private
 
-    # A missing settings record disables the feature. A missing predicate on a
-    # present settings record is a configuration error, not a disabled flag.
     def persisted_feature_enabled?(method_name)
       return false unless @feature_setting
 
-      return @feature_setting.public_send(method_name) if @feature_setting.respond_to?(method_name)
+      unless @feature_setting.respond_to?(method_name)
+        raise MissingFeatureColumnError,
+              "Missing setting column #{method_name.to_s.delete_suffix('?')} for #{@feature_setting.class.name}."
+      end
 
-      raise MissingFeatureColumnError,
-            "Missing setting column #{method_name.to_s.delete_suffix('?').inspect}"
-    end
-
-    # FeatureGuard only treats names ending in `_enabled?` as feature checks.
-    def feature_method?(method_name)
-      method_name.to_s.end_with?('_enabled?')
+      @feature_setting.public_send(method_name)
     end
   end
 end

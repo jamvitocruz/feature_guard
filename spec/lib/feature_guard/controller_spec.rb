@@ -2,6 +2,7 @@
 
 RSpec.describe FeatureGuard::Controller do # rubocop:disable Metrics/BlockLength
   before do
+    FeatureGuard.configuration = FeatureGuard::Configuration.new
     FeatureGuard.configuration.redirect_method = :dashboards_path
   end
 
@@ -9,7 +10,7 @@ RSpec.describe FeatureGuard::Controller do # rubocop:disable Metrics/BlockLength
     controller_class = Class.new(ActionController::Base) do
       include FeatureGuard::Controller
 
-      class_attribute :policy_class, :impersonating, :current_user
+      class_attribute :policy_class, :current_user
 
       def partner_dashboards_path
         '/partner/dashboards'
@@ -22,8 +23,7 @@ RSpec.describe FeatureGuard::Controller do # rubocop:disable Metrics/BlockLength
 
         @feature_guard_policy ||= self.class.policy_class.new(
           current_user: current_user,
-          feature_setting: current_account&.feature_setting,
-          impersonating: self.class.impersonating
+          feature_setting: current_account&.feature_setting
         )
       end
     end
@@ -64,44 +64,72 @@ RSpec.describe FeatureGuard::Controller do # rubocop:disable Metrics/BlockLength
     controller.class.policy_class = policy_class
     allow(feature_setting).to receive(:inventory_enabled?).and_return(false)
 
-    expect(controller.module_enabled?(:inventory)).to be(true)
+    expect(controller.module_enabled?(:inventory_enabled)).to be(true)
   end
 
-  it 'enables every feature while impersonating' do
-    controller.class.impersonating = true
-    allow(feature_setting).to receive(:inventory_enabled?).and_return(false)
-    allow(feature_setting).to receive(:reward_enabled?).and_return(false)
+  it 'returns nil for a defined nil policy method' do
+    policy_class = Class.new do
+      include FeatureGuard::Policy
 
-    expect(controller.module_enabled?(:inventory)).to be(true)
-    expect(controller.module_enabled?(:reward)).to be(true)
-  end
+      def inventory_enabled?
+        nil
+      end
+    end
+    controller.class.policy_class = policy_class
 
-  it 'uses the matching persisted setting for each feature' do
-    allow(feature_setting).to receive(:reward_enabled?).and_return(false)
-
-    expect(controller.module_enabled?(:inventory)).to be(true)
-    expect(controller.module_enabled?(:reward)).to be(false)
-  end
-
-  it 'returns false when the account has no settings record' do
-    allow(account).to receive(:feature_setting).and_return(nil)
-
-    expect(controller.module_enabled?(:inventory)).to be(false)
+    expect(controller.module_enabled?(:inventory_enabled)).to be_nil
   end
 
   it 'raises an error when the settings column does not exist' do
-    setting = instance_double('FeatureSetting')
+    setting = Class.new do
+      def self.table_name
+        'feature_settings'
+      end
+    end.new
     allow(account).to receive(:feature_setting).and_return(setting)
 
-    expect { controller.module_enabled?(:inventory) }
+    expect { controller.module_enabled?(:inventory_enabled) }
       .to raise_error(FeatureGuard::MissingFeatureColumnError, /inventory_enabled/)
+  end
+
+  it 'does not use differently named policy methods' do
+    policy_class = Class.new do
+      include FeatureGuard::Policy
+
+      def inventory_validator?
+        true
+      end
+    end
+    controller.class.policy_class = policy_class
+    allow(feature_setting).to receive(:inventory_enabled?).and_return(false)
+
+    expect(controller.module_enabled?(:inventory_enabled)).to be(false)
+  end
+
+  it 'uses the selected custom policy factory method' do
+    controller.class.feature_guard_policy_method :custom_feature_policy
+    controller.class.class_attribute :custom_policy
+    controller.class.custom_policy = policy_class.new(
+      current_user: nil,
+      feature_setting: feature_setting
+    )
+    controller.define_singleton_method(:custom_feature_policy) do
+      self.class.custom_policy
+    end
+
+    expect(controller.module_enabled?(:inventory_enabled)).to be(true)
+  end
+
+  it 'rejects feature names with a predicate marker' do
+    expect { controller.class.feature(:inventory_enabled?) }
+      .to raise_error(ArgumentError, /must not end with a question mark/)
   end
 
   context 'without a controller policy' do
     let(:policy_class) { nil }
 
     it 'raises an error' do
-      expect { controller.module_enabled?(:inventory) }
+      expect { controller.module_enabled?(:inventory_enabled) }
         .to raise_error(FeatureGuard::MissingPolicyError, /feature_guard_policy/)
     end
   end

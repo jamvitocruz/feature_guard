@@ -61,15 +61,19 @@ Declare a feature in a controller:
 
 ```ruby
 class InventoryController < ApplicationController
-  feature :inventory
+  feature :inventory_enabled
 
   def index
   end
 end
 ```
 
-`feature :inventory` expects `inventory_enabled` on
-`current_account.feature_setting`. FeatureGuard adds a `before_action`:
+The feature name must exactly match a boolean column on
+`current_account.feature_setting`. `feature :inventory_enabled` calls
+`inventory_enabled?` on the feature policy. When that method is not defined,
+the policy reads `inventory_enabled?` from the settings record. If that column
+is missing, FeatureGuard raises `FeatureGuard::MissingFeatureColumnError`.
+FeatureGuard adds a `before_action`:
 
 ```text
 inventory_enabled is true  -> the action runs
@@ -80,15 +84,13 @@ Limit a feature check to specific actions with normal `before_action` options:
 
 ```ruby
 class InventoryController < ApplicationController
-  feature :inventory, only: :index
+  feature :inventory_enabled, only: :index
 end
 ```
 
-Use a custom settings column when needed:
-
-```ruby
-feature :inventory, column: :inventory_access_enabled
-```
+For example, `feature :inventory_access_enabled` requires an
+`inventory_access_enabled` settings column and uses
+`inventory_access_enabled?` on both the policy and settings record.
 
 ## Feature policy
 
@@ -100,50 +102,55 @@ the common feature-resolution behavior.
 # app/policies/feature_policy.rb
 class FeaturePolicy
   include FeatureGuard::Policy
+
+  def inventory_enabled?
+    current_user.admin?
+  end
 end
 ```
 
 ```ruby
 # app/controllers/application_controller.rb
-def feature_guard_policy
-  @feature_guard_policy ||= FeaturePolicy.new(
-    feature_setting: current_account&.feature_setting,
-    impersonating: in_impersonation?
-  )
+class ApplicationController < ActionController::Base
+  private
+
+  def feature_guard_policy
+    @feature_guard_policy ||= FeaturePolicy.new(
+      current_user: current_user,
+      feature_setting: current_account&.feature_setting
+    )
+  end
 end
 ```
 
-The policy receives the account's `feature_setting` and an optional
-`impersonating` value. When impersonating, every feature is enabled.
+The policy receives the account's `feature_setting` and `current_user`. A
+defined policy method fully controls its declared feature. When it is absent,
+`FeatureGuard::Policy#method_missing` reads the identically named setting
+predicate. Policy and settings names must match exactly.
 
-For any declaration, FeatureGuard maps the feature column to a policy method:
+Define the private `#feature_guard_policy` instance method on the base
+controller so all controllers can build a request policy. For namespaced
+controllers, define it on that namespace's base controller. If it is missing,
+the gem raises `FeatureGuard::MissingPolicyError`.
 
-```text
-feature :name                         -> name_enabled?
-feature :name, column: :custom_access -> custom_access?
+To use a differently named factory method, select it with the class-level
+`feature_guard_policy_method` declaration:
+
+```ruby
+feature_guard_policy_method :my_custom_feature_policy
 ```
-
-A policy method returning `true` enables that feature. Returning `false` or
-`nil` falls back to the corresponding persisted setting. When the policy does
-not define the matching method, the included module's `method_missing` reads
-the persisted setting. Its `respond_to_missing?` implementation advertises
-these dynamic feature methods to Ruby.
-
-Add `feature_guard_policy` to the base controller so all controllers can use
-it. For namespaced controllers, add it to that namespace's base controller. If it is missing, the gem raises
-`FeatureGuard::MissingPolicyError`.
 
 ## Use a feature in a view
 
 `module_enabled?` is available in controller actions and views:
 
 ```erb
-<% if module_enabled?(:inventory) %>
+<% if module_enabled?(:inventory_enabled) %>
   <%= link_to "Inventory", inventory_path %>
 <% end %>
 ```
 
-You may use `module_enabled?` without declaring `feature :inventory` in the
+You may use `module_enabled?` without declaring `feature :inventory_enabled` in the
 controller. Declaring `feature` is only required when you want FeatureGuard to
 add the automatic redirect callback.
 

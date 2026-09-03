@@ -8,40 +8,45 @@ module FeatureGuard
     extend ActiveSupport::Concern
 
     included do
-      class_attribute :feature_columns, default: {}
+      class_attribute :policy_name, default: :feature_guard_policy
 
       helper_method :module_enabled?
     end
 
     # Declares a feature that is protected by the persisted feature setting. The
     # feature is checked before each action, and the user is redirected to the
-    # configured dashboard path if the feature is disabled.
+    # configured path if the feature is disabled.
     class_methods do
-      def feature(module_name, column: nil, **options)
-        module_name = module_name.to_sym
-        column ||= "#{module_name}_enabled"
+      # Selects the controller instance method that builds the request policy.
+      # Without this declaration, FeatureGuard calls `#feature_guard_policy`.
+      def feature_guard_policy_method(method_name)
+        self.policy_name = method_name.to_sym
+      end
 
-        # Build a new, frozen mapping so declarations on one controller do not
-        # mutate the mapping inherited by another controller.
-        self.feature_columns =
-          feature_columns.merge(module_name => column.to_s).freeze
+      def feature(feature_name, **options)
+        feature_name = feature_name.to_sym
+
+        if feature_name.to_s.end_with?('?')
+          raise ArgumentError,
+                'Feature name must not end with a question mark. Use :inventory_enable instead of :inventory_enable?.'
+        end
 
         before_action(**options) do
-          enforce_module_availability(module_name)
+          enforce_module_availability(feature_name)
         end
       end
     end
 
     # Returns whether a feature is enabled for the current account. Results are
     # cached for the current controller instance, which lasts one request.
-    def module_enabled?(module_name)
-      module_name = module_name.to_sym
+    def module_enabled?(feature_name)
+      feature_name = feature_name.to_sym
 
       @module_availability_cache ||= {}
 
-      return @module_availability_cache[module_name] if @module_availability_cache.key?(module_name)
+      return @module_availability_cache[feature_name] if @module_availability_cache.key?(feature_name)
 
-      @module_availability_cache[module_name] = resolve_module(module_name)
+      @module_availability_cache[feature_name] = resolve_module(feature_name)
     end
 
     private
@@ -52,25 +57,27 @@ module FeatureGuard
 
       redirect_to(
         feature_guard_redirect_path,
-        alert: "#{module_name.to_s.humanize} is not enabled for this account."
+        alert: 'This feature is not available for your account.'
       )
     end
 
     # Asks the controller-owned application policy whether the feature is enabled.
-    def resolve_module(module_name)
-      policy = feature_guard_policy
+    def resolve_module(feature_name)
+      policy = feature_guard_policy_instance
 
       return false unless policy
 
-      policy.feature_enabled?(:"#{feature_column(module_name)}?")
+      policy.public_send(:"#{feature_name}?")
     end
 
-    # Uses an explicitly declared column or the default `<feature>_enabled`.
-    def feature_column(module_name)
-      self.class.feature_columns.fetch(
-        module_name,
-        "#{module_name}_enabled"
-      )
+    # Calls the policy factory selected by `feature_guard_policy`. Policy
+    # factories may be private methods on the application's base controller.
+    def feature_guard_policy_instance
+      policy_method = self.class.policy_name
+
+      return feature_guard_policy if policy_method == :feature_guard_policy
+
+      send(policy_method)
     end
 
     # Host controllers must provide the policy instance for the request
@@ -79,7 +86,7 @@ module FeatureGuard
       base_name = namespace.empty? ? 'ApplicationController' : "#{namespace}Controller"
 
       raise MissingPolicyError,
-            "Add #feature_guard_policy to #{base_name}"
+            "Define #feature_guard_policy in #{base_name}, or configure a custom policy with feature_guard_policy_method"
     end
 
     def feature_guard_redirect_path
