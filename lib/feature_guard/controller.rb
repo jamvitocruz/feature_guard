@@ -86,7 +86,8 @@ module FeatureGuard
       base_name = namespace.empty? ? 'ApplicationController' : "#{namespace}Controller"
 
       raise MissingPolicyError,
-            "Define #feature_guard_policy in #{base_name}, or configure a custom policy with feature_guard_policy_method"
+            "Define #feature_guard_policy in #{base_name}, or configure a custom policy " \
+            'with feature_guard_policy_method'
     end
 
     def feature_guard_redirect_path
