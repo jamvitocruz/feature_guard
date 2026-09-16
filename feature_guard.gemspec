@@ -3,7 +3,7 @@
 require_relative 'lib/feature_guard/version'
 
 Gem::Specification.new do |spec|
-  spec.name = 'feature_guard'
+  spec.name = 'rails_feature_guard'
   spec.version = FeatureGuard::VERSION
   spec.authors = ['Jam Vito Cruz']
   spec.email = ['vitocruzjemmalyn@gmail.com']

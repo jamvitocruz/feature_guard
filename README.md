@@ -8,7 +8,7 @@ account's settings record. It also exposes the same checks to views.
 Add the gem to the Rails application's `Gemfile`:
 
 ```ruby
-gem "feature_guard"
+gem "rails_feature_guard"
 ```
 
 Then install dependencies:
